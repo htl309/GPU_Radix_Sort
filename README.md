@@ -1,34 +1,31 @@
 # GPU_Radix_Sort
 
-#### 介绍
+#### Introduction
 
-- 用Vulkan和cuda分别实现基数排序，并且进行性能对比，可是为什么我用Vulkan实现的性能这么慢啊，找不到原因。
+In this project, I implemented **Radix Sort** using **Vulkan** and **CUDA** respectively and conducted a performance comparison between the two. However, I found that my Vulkan implementation performs significantly slower than the CUDA version, and I have yet to identify the root cause.
 
-- 介绍的csdn博客：[https://blog.csdn.net/qq_46348003/article/details/156650297?spm=1001.2014.3001.5501](https://blog.csdn.net/qq_46348003/article/details/156650297?spm=1001.2014.3001.5501)
+**Reference Blog (CSDN):** [https://blog.csdn.net/qq_46348003/article/details/156650297](https://www.google.com/search?q=https://blog.csdn.net/qq_46348003/article/details/156650297)
 
-- 借鉴了以下两个开源项目：
-  
-  - [https://github.com/jaesung-cs/vulkan_radix_sort](https://github.com/jaesung-cs/vulkan_radix_sort)
-  - [https://github.com/b0nes164/GPUSorting](https://github.com/b0nes164/GPUSorting)
+**Open-source Reference Projects:**
 
-- 哔哩哔哩的这个视频以及相关的链接也给了很大的启发
-  
-  - [https://www.bilibili.com/video/BV1PEW4zbEKR/?spm_id_from=333.337.search-card.all.click&vd_source=80bb32e3e2afa3a6262007d27d4d75ff](https://www.bilibili.com/video/BV1PEW4zbEKR/?spm_id_from=333.337.search-card.all.click&vd_source=80bb32e3e2afa3a6262007d27d4d75ff)
+- https://github.com/jaesung-cs/vulkan_radix_sort
+- https://github.com/b0nes164/GPUSorting
 
-- 项目的本意是用于学习并行算法和熟悉Vulkan与Cuda的使用技巧，因此重做了一遍。
+**Inspirational Video (Bilibili):** https://www.bilibili.com/video/BV1PEW4zbEKR/
 
-- 当然这个小项目也会用在后续的3D高斯中
+- The original intent of this project was to study parallel algorithms and master the practical techniques of Vulkan and CUDA. Consequently, I chose to reimplement the algorithm from scratch. 
+- This small project will also be integrated into a subsequent **3D Gaussian Splatting (3DGS)** implementation.
 
 ![p](doc/p.png)
 
-#### 构建
+#### Build
 
-- cmake，然后直接运行就行，只有一个项目，main文件调用了接口来进行对比和展示效果。
+- Use **CMake** to configure the project, then run it directly. The project consists of a single target where the `main` file invokes the necessary interfaces to perform the comparison and display the results.
 
-#### 展示
+#### Demonstration
 
-- 时间性能与GPU种类，API以及数组的长度和随机范围有关。
-- 对2^30个数字需要很大的显存，至少我的16G显存不够用
+- Temporal performance is dependent on the **GPU model**, the **API** used, the **array length**, and the **range of random values**.
+- Sorting $2^{30}$ numbers requires significant VRAM; specifically, 16GB of VRAM is insufficient for a dataset of this size.
 
 | RTX5080       | 2^27  | 2^28  | 2^29  | RTX3060 Laptop | 2^27  | 2^28  | 2^29  |
 |:-------------:|:-----:|:-----:|:-----:|:--------------:|:-----:|:-----:|:-----:|
@@ -37,10 +34,10 @@
 | Vulkan Uint32 | 420.9 | 896.1 | 1796  | Vulkan Uint32  | 591.3 | 997.1 | 1851  |
 | Vulkan Float  | 456.6 | 993.2 | 1863  | Vulkan Float   | 733.1 | 1225  | 2294  |
 
-- 在RTX5080上进行cuda测试的截图
+- IN RTX5080 by cuda
 
 ![test1](doc/test1.png)
 
-- 在RTX3060 Laptop中 Vulkan测试截图
+- IN RTX3060 Laptop by vulkan
 
 ![test2](doc/test2.png)
