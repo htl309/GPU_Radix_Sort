@@ -85,9 +85,9 @@ void VulkanTest() {
 
 int main() {
 
-    CudaTest<uint32_t>();
+    //CudaTest<uint32_t>();
     //CudaTest<float>();
-    //VulkanTest<uint32_t>();
+    VulkanTest<uint32_t>();
     //VulkanTest<float>();
     return 0;
 }

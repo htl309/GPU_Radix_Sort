@@ -29,7 +29,7 @@ namespace GRS {
 
         VkCommandBuffer cmd = m_VulkanBase->beginSingleTimeCommands();
         m_VulkanBase->TimeStart(cmd);
-        m_VulkanBase->GetTimePool();
+
         m_PushconstData.sort_size = size;
         m_PushconstData.BlockDimSize = BlockDimsize;
 
@@ -92,7 +92,7 @@ namespace GRS {
 
         VkCommandBuffer cmd = m_VulkanBase->beginSingleTimeCommands();
         m_VulkanBase->TimeStart(cmd);
-        m_VulkanBase->GetTimePool();
+
         m_PushconstData.sort_size = size;
         m_PushconstData.BlockDimSize = BlockDimsize;
 
