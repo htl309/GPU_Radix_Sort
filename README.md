@@ -20,6 +20,7 @@ In this project, I implemented **Radix Sort** using **Vulkan** and **CUDA** resp
 
 #### Build
 
+- The project uses C++17 and only depends on Vulkan and CUDA.
 - Use **CMake** to configure the project, then run it directly. The project consists of a single target where the `main` file invokes the necessary interfaces to perform the comparison and display the results.
 
 #### Demonstration
