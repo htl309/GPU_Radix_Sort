@@ -1,0 +1,29 @@
+
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_shuffle : enable
+#extension GL_KHR_shader_subgroup_shuffle_relative: enable
+#extension GL_KHR_shader_subgroup_arithmetic: enable
+#extension GL_KHR_shader_subgroup_ballot: enable
+
+#include"../../define.h"
+
+uint getLaneId(){ return gl_SubgroupInvocationID; }
+
+uint getLaneMaskLt(){
+    uint lane = gl_SubgroupInvocationID;
+    return (1u << lane) - 1u;
+}
+
+
+uint InclusiveWarpScan(uint val){ return subgroupInclusiveAdd(val); }
+
+uint ActiveInclusiveWarpScan(uint val){ return subgroupInclusiveAdd(val); }
+
+uint InclusiveWarpScanCircularShift(uint val){
+
+    uint scan = subgroupInclusiveAdd(val);
+
+    return subgroupShuffle(scan, (gl_SubgroupInvocationID + LANE_MASK) & LANE_MASK);
+}
+
+uint ActiveExclusiveWarpScan(uint val){ return subgroupExclusiveAdd(val); }

@@ -1,0 +1,80 @@
+#version 450
+
+#include"Core.comp"
+
+
+layout(local_size_x = 128) in;
+
+// layout(set = 0, binding = 0) buffer Sort_ { uint sort[]; };
+// layout(set = 0, binding = 1) buffer Result_ { uint result[]; };
+// layout(set = 0, binding = 2) buffer GlobalHist_ { uint globalHist[]; };
+layout(set = 0, binding = 3) buffer PassHist_ { uint passHist[]; };
+
+layout(push_constant) uniform PushConst {
+    uint sort_size;
+    uint radixShift;
+    uint BlockDimSize;//scan专用
+    uint type;   //floatcoder专用
+} pc;
+
+
+uint threadIdx = gl_LocalInvocationID.x;
+uint blockIdx = gl_WorkGroupID.x;
+uint blockDim = gl_WorkGroupSize.x;
+uint gridDim = gl_NumWorkGroups.x;
+
+shared uint scan[128];
+
+void main()
+{
+    const uint partEnd = pc.BlockDimSize / blockDim * blockDim;
+    const uint offset = blockIdx * pc.BlockDimSize;
+    const uint circularLaneShift = getLaneId() + 1 & LANE_MASK;
+
+    uint i = threadIdx;
+    uint reduction = 0;
+
+    for (; i < partEnd; i += blockDim) {
+
+        scan[threadIdx] = passHist[i+offset];
+        scan[threadIdx] = InclusiveWarpScan(scan[threadIdx]);
+        barrier();
+
+        if (threadIdx < (blockDim >> LANE_LOG)) {
+            scan[(threadIdx + 1 << LANE_LOG) - 1] = ActiveInclusiveWarpScan(scan[(threadIdx + 1 << LANE_LOG) - 1]);
+        }
+        barrier();
+    
+        passHist[circularLaneShift + (i & ~LANE_MASK) + offset] =
+            (threadIdx >= LANE_COUNT ?   subgroupBroadcast(scan[threadIdx - 1], 0)   :   0)
+            + (getLaneId() != LANE_MASK ? scan[threadIdx] : 0)
+            +reduction;
+
+
+        reduction += scan[blockDim - 1];
+        barrier();
+    }
+
+    //以上的操作再来一遍，用来处理剩下的数字
+    if (i < pc.BlockDimSize)
+        scan[threadIdx] = passHist[i +  offset];
+    scan[threadIdx] = InclusiveWarpScan(scan[threadIdx]);
+    barrier();
+
+    if (threadIdx < (blockDim >> LANE_LOG))
+    {
+        scan[(threadIdx + 1 << LANE_LOG) - 1] =
+            ActiveInclusiveWarpScan(scan[(threadIdx + 1 << LANE_LOG) - 1]);
+    }
+    barrier();
+
+    const uint index = circularLaneShift + (i & ~LANE_MASK);
+    if (index < pc.BlockDimSize)
+    {
+        passHist[index + offset] =
+            (getLaneId() != LANE_MASK ? scan[threadIdx] : 0) +
+            (threadIdx >= LANE_COUNT ?
+                scan[(threadIdx & ~LANE_MASK) - 1] : 0) +
+            reduction;
+    }
+}

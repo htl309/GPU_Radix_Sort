@@ -1,0 +1,46 @@
+#version 450
+
+#include"Core.comp"
+
+
+layout(local_size_x = 512) in;
+
+layout(set = 0, binding = 0) buffer Sort_ { uint sort[]; };
+layout(set = 0, binding = 1) buffer Result_ { uint result[]; };
+layout(set = 0, binding = 2) buffer GlobalHist_ { uint globalHist[]; };
+layout(set = 0, binding = 3) buffer PassHist_ { uint passHist[]; };
+
+layout(push_constant) uniform PushConst {
+    uint sort_size;
+    uint radixShift;
+    uint BlockDimSize;//scan专用
+    uint type;   //floatcoder专用
+} pc;
+
+uint threadIdx = gl_LocalInvocationID.x;
+uint blockIdx = gl_WorkGroupID.x;
+
+void floatencoder() {
+        for (uint i = 0, t = blockIdx * PART_SIZE + getLaneId() + 480 * (threadIdx >> 5); i < 15; ++i, t += LANE_COUNT) {
+            uint u = sort[t];
+            result[t] = (u >> 31)==1 ? ~u : (u | 0x80000000u);
+        }
+        barrier();
+}
+
+void floatdecoder() {
+        for (uint i = 0, t = blockIdx * PART_SIZE + getLaneId() + 480 * (threadIdx >> 5); i < 15; ++i, t += LANE_COUNT) {
+            uint u = sort[t];
+            result[t] = (u >> 31)==1 ? (u & 0x7fffffffu) : ~u;
+        }        
+        barrier();
+    }
+void main()
+{
+    if(pc.type==0){
+        floatencoder();
+    }else{
+        floatdecoder();
+    }
+
+}

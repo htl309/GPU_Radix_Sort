@@ -1,0 +1,115 @@
+#version 450
+
+#include"Core.comp"
+
+
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0) buffer Sort_ { uint sort[]; };
+layout(set = 0, binding = 1) buffer Result_ { uint result[]; };
+layout(set = 0, binding = 2) buffer GlobalHist_ { uint globalHist[]; };
+layout(set = 0, binding = 3) buffer PassHist_ { uint passHist[]; };
+
+layout(push_constant) uniform PushConst {
+    uint sort_size;
+    uint radixShift;
+    uint BlockDimSize;//scan专用
+    uint type;   //floatcoder专用
+} pc;
+
+uint threadIdx = gl_LocalInvocationID.x;
+uint blockIdx = gl_WorkGroupID.x;
+uint blockDim = gl_WorkGroupSize.x;
+uint gridDim=gl_NumWorkGroups.x;
+
+shared uint s_globalHist[RADIX*2];
+
+void main()
+{
+
+
+    for (uint i = threadIdx; i < RADIX * 2; i += blockDim) {
+        s_globalHist[i] = 0;
+    }
+    barrier();
+
+    uint s_wavesHist = threadIdx / 64 * RADIX;
+
+
+
+    if(blockIdx<gridDim-1){
+            uint partEnd = (blockIdx + 1) * VEC_PART_SIZE;
+        for (uint i = threadIdx + (blockIdx * VEC_PART_SIZE); i < partEnd; i += blockDim){
+            uvec4 keys = uvec4(sort[4*i], sort[4*i+1], sort[4*i+2], sort[4*i+3]);
+                uint t0 = (keys.x >> pc.radixShift) & RADIX_MASK;
+                uint t1 = (keys.y >> pc.radixShift) & RADIX_MASK;
+                uint t2 = (keys.z >> pc.radixShift) & RADIX_MASK;
+                uint t3 = (keys.w >> pc.radixShift) & RADIX_MASK;
+                atomicAdd(s_globalHist[s_wavesHist + t0] , 1); // 或者你的计数逻辑
+                atomicAdd(s_globalHist[s_wavesHist + t1] , 1); 
+                atomicAdd(s_globalHist[s_wavesHist + t2] , 1); 
+                atomicAdd(s_globalHist[s_wavesHist + t3] , 1); 
+        }
+    }
+    if(blockIdx==gridDim-1){
+        for (uint i = threadIdx + (blockIdx * PART_SIZE); i < pc.sort_size; i += blockDim)
+            {
+            const uint t = (sort[i]>> pc.radixShift) & RADIX_MASK;
+            atomicAdd(s_globalHist[s_wavesHist + t] , 1);
+        }
+    }
+
+    barrier();
+
+    for (uint i = threadIdx; i < RADIX; i += blockDim) {
+        s_globalHist[i] += s_globalHist[i + RADIX];
+        //passHist长度是7680小段的数量*256
+        //举个例子，如果输入的数组长度是76800，那么我们将会分成10整段进行处理
+        //那么这里的passHist，长度就是10*256，也就是有10个桶
+        //blockIdx.x是0-9是个数字，
+        //也就是说，前十个数字都是桶号为0的值，或者说，0 10 20 .... 255*10，这256个值才属于第一个桶
+        //1 11 21 .... 255*10+1 属于第二个桶
+        passHist[i * gridDim + blockIdx] = s_globalHist[i];
+
+        //现在我们对前半部分求前缀和，注意的是：这个函数是对一个wrap，也就是32个线程中的数字求前缀和
+        //因为前半部分的长度是256，要是按照这样子算的话，这个数组分成了8段，
+        // 我们这一步只求了每一段的前缀
+        //需要注意的是，这个函数求完前缀和将数组整体往后移动了一位，最后一位变成了第一位
+        //如果s_globalHist原本是1 1....1,64个1组成的数组，那么经过了这个函数之后就是32 1 2 3...31,32 1 2 3...31
+        s_globalHist[i] = InclusiveWarpScanCircularShift(s_globalHist[i]);
+
+        
+    }
+    barrier();
+    //因为上一步得到的s_globalHist，是分为8段的前缀和
+    //我们这里需要在求一次前缀和，这里先对每一段第一个元素求前缀和
+    //RADIX >> LANE_LOG=8
+    if (threadIdx < (RADIX >> LANE_LOG)) {
+        //这里又用了一个底层的trick，threadIdx.x < (RADIX >> LANE_LOG)会使__activemask=0x000000ff,前8位为1
+        //需要注意的是：这里只计算0 32 64 96.... 8个位置的前缀和，并且都往后挪动一位，0位置变为0
+        //继续上面的示例，如果s_globalHist是32 1 2 3...31,32 1 2 3...31，那么经过了这个函数之后就是0 1 2 3...31,32 1 2 3...31,64
+        //最后的64的意思是，如果这个数组更长一些，那这个位置的数字就是原本32位置的那个数值，就是32+32=64
+        s_globalHist[threadIdx << LANE_LOG] = ActiveExclusiveWarpScan(s_globalHist[threadIdx << LANE_LOG]);
+
+       
+    }
+    barrier();
+   
+    for (uint i = threadIdx; i < RADIX; i += blockDim) {
+        //这里的radixShift << 5就是偏移量，0 8 16 对应的就是0 256 512 的偏移量，radixShift << 5=radixShift*32
+        //然后每一个warp，这里称之为Lane，都加上自己的warp第一位的数值，要是第一位就不加了，
+        //为什么这里是__shfl_sync(0xfffffffe, s_globalHist[i - 1], 1)，而不是__shfl_sync(0xfffffffe, s_globalHist[i], 0)？
+        //是因为0xfffffffe，0号线程跳过了，当然__shfl_sync(0xfffffffe, s_globalHist[i - 2], 2)也是可以的
+        // 那么为什么不是__shfl_sync(0xfffffffe, s_globalHist[0], 1)呢？因为每组wrap的0号线程的id不一定是0，只有第一组是0
+        // 之后的每组0号线程的id就是该组1号线程的id-1，1号线程的id是i，所以是i-1
+        // 继续上面的示例，如果s_globalHist是0 1 2 3...31,32 1 2 3...31，那么经过了这个函数之后就是0 1 2 3...31, 32 33...63
+        //还有一个地方，这里是globalHist，而s_globalHist这个只是7680个数字的桶计数
+        // 这里并行的将每7680个数字中的值加到了globalHist上，这里并行值的是 blockIdx.x的并行,
+        // 下面这句代码会执行RADIX*gridDim.x次
+        // atomicAdd(globalHist[i + (radixShift << 5)], s_globalHist[i] + (getLaneId() ? __shfl_sync(0xfffffffe, s_globalHist[i - 1], 1) : 0));
+        //    atomicAdd(globalHist[i + (pc.radixShift << 5)], s_globalHist[i]+ ((getLaneId()==0) ? 0: subgroupBroadcastFirst(s_globalHist[i])));
+
+        uint warp0 = subgroupBroadcastFirst(s_globalHist[i]);
+        atomicAdd(globalHist[i + (pc.radixShift << 5)], s_globalHist[i] + (getLaneId() == 0 ? 0 : warp0));
+    }
+}

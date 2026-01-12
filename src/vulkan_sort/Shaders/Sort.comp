@@ -1,0 +1,172 @@
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+#include"Core.comp"
+
+
+layout(local_size_x = 512) in;
+
+layout(set = 0, binding = 0) buffer Sort_ { uint sort[]; };
+layout(set = 0, binding = 1) buffer Result_ { uint result[]; };
+layout(set = 0, binding = 2) buffer GlobalHist_ { uint globalHist[]; };
+layout(set = 0, binding = 3) buffer PassHist_ { uint passHist[]; };
+
+layout(push_constant) uniform PushConst {
+    uint sort_size;
+    uint radixShift;
+    uint BlockDimSize;//scan专用
+    uint type;   //floatcoder专用
+} pc;
+
+
+uint threadIdx = gl_LocalInvocationID.x;
+uint blockIdx = gl_WorkGroupID.x;
+uint blockDim = gl_WorkGroupSize.x;
+uint gridDim=gl_NumWorkGroups.x;
+
+shared uint s_warpHistograms[PART_SIZE];
+shared uint s_localHistogram[RADIX];
+//将512个线程分为16部分，右移五位，将0-511映射到0 1 2 3 ... 15
+//左移8位，相当于乘上了256
+uint s_warpHistIdx= (threadIdx >> LANE_LOG) << 8;
+
+void main()
+{
+
+
+    //为什么是4096,是因为512个线程有16个wrap，每个wrap需要一个大小为256的桶
+    //4096=256*16
+    for (uint i = threadIdx; i < 4096; i += blockDim) {
+        s_warpHistograms[i] = 0;
+    }
+
+    //每个线程处理15个值
+    uint keys[15];
+
+    if (blockIdx < gridDim - 1) {
+        //因为32个线程能处理32*15个key，所以480*(threadIdx>>5)
+        //总共处理15*32*16=7980个数字，这里的32是wrap的大小，16是256个线程包含16个wrap
+        for (uint i = 0, t = blockIdx * PART_SIZE + getLaneId() + 480 * (threadIdx >> 5); i < 15; ++i, t += LANE_COUNT) {
+            keys[i] = sort[t];
+        }
+    }
+    if (blockIdx == gridDim - 1) {
+        for (uint i = 0, t = blockIdx * PART_SIZE + getLaneId() + 480 * (threadIdx >> 5); i < 15; ++i, t += LANE_COUNT) {
+            keys[i] = t < pc.sort_size ? sort[t] : 0xffffffff;
+            
+        }
+    }
+
+    barrier();
+
+
+    ////////////////////////////////////////////////////
+    // uint offsets[15];
+    // for (uint i = 0; i < 15; ++i)
+    // {
+    //    offsets[i] = atomicAdd(s_warpHistograms[s_warpHistIdx+(keys[i] >> pc.radixShift & RADIX_MASK)], 1);
+    // }
+    // barrier();
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // 这上下两段代码可以平替
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    uint16_t offsets[15];
+    #pragma unroll
+    for (uint i = 0; i < 15; ++i)
+    {
+        uint warpFlags = 0xffffffff;
+        #pragma unroll
+        for (int k = 0; k < 8; ++k)
+        {
+            const bool t2 = (keys[i] >> (k + pc.radixShift) & 1)!=0;
+            //举手，记录这次举手状态和自己一样的元素
+            warpFlags &= (t2 ? 0 : 0xffffffff) ^ subgroupBallot(t2).x;
+        }
+        const uint bits = bitCount(warpFlags & getLaneMaskLt());
+        uint preIncrementVal;
+        if (bits == 0)
+            preIncrementVal = atomicAdd(s_warpHistograms[s_warpHistIdx+(keys[i] >> pc.radixShift & RADIX_MASK)], bitCount(warpFlags));
+        offsets[i] = uint16_t(subgroupBroadcast(preIncrementVal, findLSB(warpFlags)) + bits);
+    }
+    barrier();
+    // //////////////////////////////////////////////////////
+
+    //exclusive prefix sum up the warp histograms
+
+    // 16个桶做前缀和
+
+    if (threadIdx < RADIX)
+    {
+        uint reduction = s_warpHistograms[threadIdx];
+        for (uint i = threadIdx + RADIX; i < 4096; i += RADIX)
+        {
+            reduction += s_warpHistograms[i];
+            s_warpHistograms[i] = reduction - s_warpHistograms[i];
+        }
+
+        //begin the exclusive prefix sum across the reductions
+        s_warpHistograms[threadIdx] = InclusiveWarpScanCircularShift(reduction);
+    }
+    barrier();
+
+    if (threadIdx < (RADIX >> LANE_LOG))
+        s_warpHistograms[threadIdx << LANE_LOG] = ActiveExclusiveWarpScan(s_warpHistograms[threadIdx << LANE_LOG]);
+    barrier();
+
+    if (threadIdx < RADIX && getLaneId()!=0) {
+        s_warpHistograms[threadIdx] += subgroupBroadcast(s_warpHistograms[threadIdx-1],1);
+        }
+    barrier();
+
+    //update offsets
+    if (WARP_INDEX!=0)
+    {
+    #pragma unroll 
+        for (uint i = 0; i < 15; ++i)
+        {
+            const uint t2 = keys[i] >> pc.radixShift & RADIX_MASK;
+            offsets[i] += uint16_t(s_warpHistograms[s_warpHistIdx+t2] + s_warpHistograms[t2]);
+        }
+    }
+    else
+    {
+    #pragma unroll
+        for (uint i = 0; i < 15; ++i)
+            offsets[i] += uint16_t(s_warpHistograms[keys[i] >> pc.radixShift & RADIX_MASK]);
+    }
+
+    //load in threadblock reductions
+    if (threadIdx < RADIX)
+    {
+        //记录某个部分中桶的起始位置
+        s_localHistogram[threadIdx] = globalHist[threadIdx + (pc.radixShift << 5)] +
+            passHist[threadIdx * gridDim + blockIdx] - s_warpHistograms[threadIdx];
+    }
+    barrier();
+
+    //scatter keys into shared memory
+    #pragma unroll
+    for (uint i = 0; i < 15; ++i)
+        s_warpHistograms[offsets[i]] = keys[i];
+    barrier();
+
+    //scatter runs of keys into device memory
+    if (blockIdx < gridDim - 1)
+    {
+    #pragma unroll 15
+        for (uint i = threadIdx; i < 7680; i += blockDim.x)
+            result[s_localHistogram[s_warpHistograms[i] >> pc.radixShift & RADIX_MASK] + i] = s_warpHistograms[i];
+    }
+
+    if (blockIdx == gridDim - 1)
+    {
+        const uint finalPartSize = pc.sort_size - blockIdx * 7680;
+        for (uint i = threadIdx; i < finalPartSize; i += blockDim.x)
+            result[s_localHistogram[s_warpHistograms[i] >> pc.radixShift & RADIX_MASK] + i] = s_warpHistograms[i];
+    }
+}
+
+
+   
