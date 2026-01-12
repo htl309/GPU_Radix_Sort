@@ -108,7 +108,7 @@ namespace GRS {
             0, 1, &m_Barrier, 0, nullptr, 0, nullptr);
 
         for (uint32_t i = 0; i < k_radixPasses; i++) {
-
+            SwapIO();
             m_PushconstData.radixShift = i * 8;
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_upsweepPipeLine->GetPipeLine());
@@ -142,10 +142,16 @@ namespace GRS {
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 0, 1, &m_Barrier, 0, nullptr, 0, nullptr);
-            SwapIO();
 
         }
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &m_Barrier, 0, nullptr, 0, nullptr);
+
+        SwapIO();
         m_PushconstData.type = 1;
+
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_floatcoderPipeLine->GetPipeLine());
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout, 0, 1, &m_DescSet, 0, nullptr);
         vkCmdPushConstants(cmd, m_PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushconstData), &m_PushconstData);
@@ -154,7 +160,6 @@ namespace GRS {
         m_VulkanBase->TimeEnd(cmd);
 
         m_VulkanBase->endSingleTimeCommands(cmd);
-
 
         m_BufferResult->DownloadResult((void*)data, size);
 

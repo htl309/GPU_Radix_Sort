@@ -42,7 +42,7 @@ namespace GRS {
                 uint32_t sort_size = 0;
                 uint32_t radixShift = 0;
                 uint32_t  BlockDimSize=0;
-                uint32_t  type;
+                uint32_t  type=0;
             } m_PushconstData;
            
             
